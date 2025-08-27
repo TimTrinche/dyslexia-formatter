@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lisibilité – Double consonnes & Gras Bionic (client‑side)</title>
+  <style>
+    :root{--bg:#0b0b0f;--fg:#f4f4f7;--muted:#a8a8b3;--card:#15151c;--accent:#7aa2f7;}
+    html,body{height:100%;}
+    body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial;}
+    .wrap{max-width:920px;margin:32px auto;padding:0 16px;}
+    h1{font-size:1.5rem;margin:0 0 8px}
+    .sub{color:var(--muted);margin:0 0 20px}
+    .card{background:var(--card);border-radius:16px;padding:16px;margin:14px 0;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+    textarea{width:100%;min-height:160px;border-radius:12px;border:1px solid #2b2b36;background:#0f0f15;color:var(--fg);padding:12px;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .row>*{flex:1 1 auto}
+    label{display:block;font-size:.9rem;color:var(--muted);margin-bottom:6px}
+    input[type="number"],select{width:100%;border-radius:10px;border:1px solid #2b2b36;background:#0f0f15;color:var(--fg);padding:10px}
+    button{background:var(--accent);color:#0b0b0f;border:0;border-radius:12px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .out{padding:14px;border-radius:12px;background:#0f0f15;border:1px solid #2b2b36;min-height:100px}
+    .muted{color:var(--muted);font-size:.9rem}
+    .preview{padding:12px;background:#0f0f15;border:1px dashed #2b2b36;border-radius:12px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Reformulation lisible (client‑side)</h1>
+    <p class="sub">Syllabifie <strong>uniquement</strong> le top X% des mots les plus complexes <em>ayant une double consonne interne</em> (insertion de •), et applique un “gras bionique” compatible GPT.</p>
+
+    <div class="card">
+      <label for="inp">Texte source</label>
+      <textarea id="inp" placeholder="Collez votre texte ici…">La lecture des lettres peut sembler difficile, surtout lorsque certaines appellations contiennent des consonnes doubles comme 'belle', 'lettres' ou 'apprendre'. L’objectif est d’améliorer la lisibilité sans retirer de lettres.</textarea>
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label>Top % complexité</label>
+          <input id="pct" type="number" min="1" max="50" step="1" value="5">
+        </div>
+        <div>
+          <label>Mode de gras</label>
+          <select id="mode">
+            <option value="html" selected>HTML &lt;strong&gt;…&lt;/strong&gt; (recommandé)</option>
+            <option value="unicode">Unicode Bold (A‑Z, a‑z, 0‑9)</option>
+            <option value="markdown">Markdown **…**</option>
+          </select>
+        </div>
+        <div style="flex:0 0 auto">
+          <label>&nbsp;</label>
+          <button id="run">Transformer</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px">Aperçu rendu</h3>
+      <div id="preview" class="preview"></div>
+      <p class="muted">Astuce : en mode <span class="mono">HTML</span>, le rendu est fidèle à l’UI de GPT (pas besoin de Markdown). En mode <span class="mono">Unicode</span>, les lettres ASCII initiales sont remplacées par leurs équivalents gras.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px">Sortie textuelle</h3>
+      <pre id="out" class="out mono"></pre>
+    </div>
+  </div>
+
+<script>
+const DOUBLE_CONS = ["bb","cc","dd","ff","gg","ll","mm","nn","pp","qq","rr","ss","tt","zz"];
+const CONSONANTS = "bcdfghjklmnpqrstvwxzçBCDFGHJKLMNPQRSTVWXZÇ";
+
+function tokenize(text){
+  const re = /[A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*|\\d+|[^\\w\\s]|\\s+/gu;
+  const out = [];
+  const mword = /^[A-Za-zÀ-ÖØ-öø-ÿ]+(?:'[A-Za-zÀ-ÖØ-öø-ÿ]+)*|\\d+$/u;
+  for (const tok of text.matchAll(re)){
+    const t = tok[0];
+    if (mword.test(t)) out.push({type:"word", text:t});
+    else out.push({type:"sep", text:t});
+  }
+  return out;
+}
+
+function hasInternalDoubleConsonant(w){
+  const low = w.toLowerCase();
+  for (const dc of DOUBLE_CONS){
+    const idx = low.indexOf(dc);
+    if (idx > 0 && idx < low.length - 2) return true;
+  }
+  return false;
+}
+
+function wordComplexityScore(w){
+  const len = w.length;
+  const base = Math.pow(len, 1.2);
+  const low = w.toLowerCase();
+  const clusters = low.match(new RegExp("["+CONSONANTS+"]{2,}", "gu")) || [];
+  const bonusClusters = clusters.reduce((s,c)=> s + Math.pow(c.length,1.1), 0);
+  const diacritics = [...low].filter(ch => /[A-Za-z]/.test(ch) === false && /[A-Za-zÀ-ÖØ-öø-ÿ]/u.test(ch)).length;
+  const bonusDiac = 0.6 * diacritics;
+  return base + bonusClusters + bonusDiac;
+}
+
+function chooseTopComplex(tokens, topPct=0.05){
+  const words = tokens.filter(t=>t.type==="word").map(t=>t.text);
+  const uniq = [...new Set(words)];
+  const scored = uniq.map(w=> [w, wordComplexityScore(w)]).sort((a,b)=> b[1]-a[1]);
+  const k = Math.max(1, Math.ceil(scored.length * topPct));
+  return new Set(scored.slice(0,k).map(x=>x[0]));
+}
+
+function syllabifyDoubleConsonants(w){
+  // Insert • between the 2 letters of each internal double consonant
+  for (const dc of DOUBLE_CONS){
+    const re = new RegExp(`(?<=.)${dc}(?=.)`, "gi");
+    w = w.replace(re, (m)=> m[0] + "•" + m[1]);
+  }
+  return w;
+}
+
+function bionicBoldSplit(w, frac=0.4){
+  const letters = [...w].filter(ch=> /\p{L}/u.test(ch));
+  const nBold = letters.length ? Math.max(1, Math.ceil(letters.length * frac)) : 0;
+  let count = 0, boldPart="", rest="";
+  for (const ch of w){
+    if (/\p{L}/u.test(ch) && count < nBold){ boldPart += ch; count++; }
+    else { rest += ch; }
+  }
+  return [boldPart, rest];
+}
+
+function toUnicodeBold(s){
+  const map = ch => {
+    const code = ch.codePointAt(0);
+    // A-Z
+    if (code>=65 && code<=90) return String.fromCodePoint(0x1D400 + (code-65));
+    // a-z
+    if (code>=97 && code<=122) return String.fromCodePoint(0x1D41A + (code-97));
+    // 0-9
+    if (code>=48 && code<=57) return String.fromCodePoint(0x1D7CE + (code-48));
+    return ch;
+  };
+  return [...s].map(map).join("");
+}
+
+function applyBold(text, mode="html"){
+  const tokens = tokenize(text);
+  const out = [];
+  for (const t of tokens){
+    if (t.type !== "word"){ out.push(t.text); continue; }
+    const [b, r] = bionicBoldSplit(t.text, 0.4);
+    if (!b){ out.push(t.text); continue; }
+    if (mode === "html") out.push(`<strong>${b}</strong>${r}`);
+    else if (mode === "markdown") out.push(`**${b}**${r}`);
+    else if (mode === "unicode") out.push(`${toUnicodeBold(b)}${r}`);
+    else out.push(`<strong>${b}</strong>${r}`);
+  }
+  return out.join("");
+}
+
+function processText(text, boldMode="html", topPct=0.05){
+  const tokens = tokenize(text);
+  const top = chooseTopComplex(tokens, topPct);
+  const arr = tokens.map(t=>{
+    if (t.type !== "word") return t.text;
+    let w = t.text;
+    if (top.has(w) && hasInternalDoubleConsonant(w)){
+      w = syllabifyDoubleConsonants(w);
+    }
+    return w;
+  });
+  const joined = arr.join("");
+  return applyBold(joined, boldMode);
+}
+
+function run(){
+  const txt = document.getElementById("inp").value;
+  const pct = Math.max(1, Math.min(50, Number(document.getElementById("pct").value)||5));
+  const mode = document.getElementById("mode").value;
+  const out = processText(txt, mode, pct/100);
+  document.getElementById("preview").innerHTML = out;
+  document.getElementById("out").textContent = out;
+}
+
+document.getElementById("run").addEventListener("click", run);
+window.addEventListener("load", run);
+</script>
+</body>
+</html>
